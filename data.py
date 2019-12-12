@@ -5,7 +5,7 @@ def parse_data(filename):
 	with open(filename, 'r') as f:
 		read_int = lambda: int(f.readline())
 		read_float_line = lambda: [float(x) for x in f.readline().split(',')]
-		
+
 		m = read_int()
 		nA = read_int()
 		k = read_int()
@@ -29,9 +29,11 @@ def parse_data(filename):
 
 		return m, nA, k, theta_b, episodes, pi_vals_for_first_ep
 
-m, nA, k, theta_b, episodes, pi_vals_for_first_ep = parse_data('data.csv')
-print(m, nA, k)
-print(len(episodes))
-print(episodes[0])
-print(theta_b)
-print(pi_vals_for_first_ep)
+# m, nA, k, theta_b, episodes, pi_vals_for_first_ep = parse_data('data.csv')
+# print(m, nA, k)
+# print(len(episodes))
+# print(episodes[0])
+# print(theta_b)
+# print(pi_vals_for_first_ep)
+
+# print(np.mean([ep['rewards'].sum() for ep in episodes]))
