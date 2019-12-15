@@ -45,7 +45,6 @@ class FCHC(BBOAgent):
         if eval_new > self.eval:
             self._theta = theta_new
             self.eval = eval_new
-            print(eval_new)
 
         return self._theta
 

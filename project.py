@@ -1,151 +1,162 @@
 import numpy as np
-from agents.cem import CEM
 from agents.fchc import FCHC
-from agents.ga import GA
 from hcpi import *
-from time import perf_counter
-from fourier_basis import FirstOrderFourierBasisFor1dState
-from data import parse_data
+from policy import *
+from data import *
+from matplotlib import pyplot as plt
 
 
-class PolicyLinear():
-	def __init__(self, nactions, phi, phi_nfeatures, theta=None):
-		self.nactions = nactions
-		self.phi = phi
-		if theta is not None:
-			self._theta = theta
-		else:
-			self._theta = np.random.normal(0, 1, size=(phi_nfeatures, nactions))
+# m, nA, k, theta_b, episodes, pi_vals_for_first_ep = load_from_csv('data.csv')
+# S, A, R, ep_lens = prepare_data(episodes, theta_b, save_to_file=False)
 
-	def __call__(self, s, a=None):
-		action_probs = self.getActionProbabilities(s)
-		if a is not None:			
-			return np.take_along_axis(action_probs, a[..., None], axis=-1).squeeze()
-		else: 
-			return np.random.choice(self.nactions, p=action_probs)
-
-	@property
-	def parameters(self):
-		return self._theta.flatten()
-
-	@parameters.setter
-	def parameters(self, theta):
-		self._theta = theta.reshape(self._theta.shape)
-
-	def getActionProbabilities(self, s):
-		out = np.dot(self.phi(s), self._theta)
-		exps = np.exp(out - out.max(axis=-1, keepdims=True))
-		return exps / exps.sum(axis=-1, keepdims=True)
-
-
-
-# m, nA, k, theta_b, episodes, pi_vals_for_first_ep = parse_data('data.csv')
-# L = max(len(ep['states']) for ep in episodes)
-# S = np.zeros((len(episodes), L))
-# A = np.zeros((len(episodes), L)).astype(int)
-# R = np.zeros((len(episodes), L))
-# for i, ep in enumerate(episodes):
-# 	s, a, r = ep['states'], ep['actions'], ep['rewards']
-# 	assert len(s) == len(a) == len(r)
-# 	S[i, : len(s)] = s
-# 	A[i, : len(a)] = a
-# 	R[i, : len(r)] = r
-# print(S.shape)
-
-
-# pi_b = PolicyLinear(2, FirstOrderFourierBasisFor1dState(), 2)
-# pi_b.parameters = theta_b
-# print(theta_b)
-# print(pi_b.parameters)
-# for s, a, pi in zip(S[0], A[0], pi_vals_for_first_ep):
-# 	print(s, a, pi_b(s, a), pi)
-
-# np.savez('data', S=S, A=A, R=R, m=m, k=k, theta_b=theta_b)
 data = np.load('data.npz')
-S, A, R, m, k, theta_b = data['S'], data['A'], data['R'], data['m'], data['k'], data['theta_b']
-print(S.shape)
-
-np.random.seed(0)
-N = len(S)
-idx = np.arange(N)
-np.random.shuffle(idx)
-S, A, R = S[idx], A[idx], R[idx]
-
-split = int(.6 * N)
-D_c = S[: split], A[: split], R[: split]
-D_s = S[split :], A[split :], R[split :]
-
-assert len(D_c[0]) + len(D_s[0]) == N
+S, A, R, ep_lens, theta_b = data['S'], data['A'], data['R'], data['ep_lens'], data['theta_b']
 
 pi_b = PolicyLinear(2, FirstOrderFourierBasisFor1dState(), 2)
 pi_b.parameters = theta_b
 
-pi_e = PolicyLinear(2, FirstOrderFourierBasisFor1dState(), 2)
+# verify_pi_b(pi_b, pi_vals_for_first_ep, S, A)
 
-def theta_to_pi(theta):
-	pi_e.parameters = theta
-	return pi_e
 
-delta = 0.001
-c = D_s[-1].sum(axis=-1).mean()
-print(c)
-# print(D_s[-1].sum(axis=-1))
-eval_fn = hcpe(D_c, D_s, pi_b, c, theta_to_pi, delta)
+def cand_safe_split(D, ratio=.6, shuffle=True, rfilter=None, cfilter=None):
+	assert isinstance(D, tuple) or isinstance(D, list)
+	N = len(D[0])
+	if shuffle:
+		idx = np.arange(N)
+		np.random.shuffle(idx)
+		D = tuple([d[idx] for d in D])
+		if rfilter is not None:
+			rfilter = rfilter[idx]
 
-bbo = CEM(
-	theta = pi_e.parameters,
-	sigma = 4, 
-	popSize = 16, 
-	numElite = 4, 
-	epsilon = 4,
-	evaluationFunction = eval_fn
-)
-# bbo = FCHC(
-#     theta = pi_e.parameters,
-#     sigma = 1.25, 
-#     evaluationFunction = eval_fn
+	split = int(ratio * N)
+	D_cand = tuple(d[: split] for d in D)
+	D_safe   = tuple(d[split :] for d in D)
+	assert len(D_cand[0]) + len(D_safe[0]) == N
+
+	if rfilter is not None or cfilter is not None:
+		if rfilter is None:
+			rfilter = slice(None, None)
+			rfilter_cand = slice(None, None)
+			rfilter_safe = slice(None, None)
+		else:
+			rfilter_cand = rfilter[: split]
+			rfilter_safe   = rfilter[split: ]
+		if cfilter is None:
+			cfilter = slice(None, None)
+
+		D_f = tuple(d[rfilter, cfilter] for d in D)
+		D_cand_f = tuple(d[rfilter_cand, cfilter] for d in D_cand)
+		D_safe_f = tuple(d[rfilter_safe, cfilter] for d in D_safe)
+
+		assert len(D_safe_f[0]) <= len(D_safe[0])
+		print(len(D[0]), len(D_f[0]))
+		return D, D_cand, D_safe, D_f, D_cand_f, D_safe_f
+
+	print(len(D[0]))
+	return D, D_cand, D_safe
+
+returns = R.sum(axis=-1)
+f = None
+# f = (returns > -10) & (returns < 10)
+# f = (returns < 0)
+# f = (ep_lens == 5) #& (returns > -20) & (returns < 10)
+D_nf, D_c_nf, D_s_nf, D, D_c, D_s = cand_safe_split(
+										D=(S, A, R, ep_lens.reshape(-1, 1)), 
+										ratio=.6, shuffle=True, 
+										rfilter=f, cfilter=slice(None, None)
+									)
+
+# bbo = CEM(
+# 	theta = pi_e.parameters,
+# 	sigma = 4, 
+# 	popSize = 8, 
+# 	numElite = 2, 
+# 	epsilon = 4,
+# 	evaluationFunction = eval_fn
 # )
-# populationSize = 32
+
+
+# populationSize = 16
 # bbo = GA(
 #     populationSize = populationSize, 
-#     numElite = 4, 
-#     K_p = 16, 
-#     alpha = 1., 
+#     numElite = 2, 
+#     K_p = 4, 
+#     alpha = 2., 
 #     initPopulationFunction = lambda populationSize: np.random.randn(populationSize, pi_e.parameters.shape[0]), 
 #     evaluationFunction = eval_fn
 # )
-t0 = perf_counter()
-train_iters = 100
-train_evals, val_evals = [0] * train_iters, [0] * train_iters
-for i in range(train_iters):
-	bbo.train()
-	pi_e.parameters = bbo.parameters
-	# train_evals[i] = bbo.eval
-	# train_evals[i] = sum(bbo._evals) / populationSize
-	train_evals[i], _ = pdis_batch(D_c, pi_e, pi_b)
-	val_evals[i], _ = pdis_batch(D_s, pi_e, pi_b)
-	print(train_evals[i], val_evals[i])
-print(pi_e.parameters)
-print(eval_fn(pi_e.parameters))
-print()
-print(f'elapsed: {perf_counter() - t0}')
+# pi_e = PolicyLinear(2, FirstOrderFourierBasisFor1dState(), 2)
+# pi_e.parameters = np.zeros_like(pi_b.parameters)
+# print(pi_e.parameters)
+# print('D', pdis_batch(D, pi_e, pi_b, batch_size=1)[0])
+# print('D_c', pdis_batch(D_c, pi_e, pi_b)[0])
+# print('D_s', pdis_batch(D_s, pi_e, pi_b)[0])
+# print('D_nf', pdis_batch(D_nf, pi_e, pi_b)[0])
+# print('D_c_nf', pdis_batch(D_c_nf, pi_e, pi_b)[0])
+# print('D_s_nf', pdis_batch(D_s_nf, pi_e, pi_b)[0])
 
-from matplotlib import pyplot as plt
-plt.plot(np.arange(len(train_evals)), train_evals)
-plt.plot(np.arange(len(val_evals)), val_evals)
-plt.show()
 
-# # def print_history(ep):
-# # 	for s, a, r in zip(*ep):
-# # 		print('%.3f %d, %.3f' % (s, a, r))
-# # 	print('-----------------------------')
 
-# # print_history(run_episode(mdp, pi_b, max_steps=10))
-# # print_history(run_episode(mdp, pi_e, max_steps=10))
+def run():
+	def train():
+		bsz = 512
+		eval_fn = hcpe(D_c, D_s, pi_b, c, theta_to_pi, delta, batch_size=bsz)
 
-# print(run_episodes(100, mdp, pi_b, max_steps=10)[2].mean(axis=0))
-# print(eval_fn(pi_e.parameters))
-# print(run_episodes(100, mdp, pi_e, max_steps=10)[2].mean(axis=0))
-# for i in range(20):
-# 	s = i / 10
-# 	print(s, sum(pi_e(s) for _ in range(10))/10)
+		bbo = FCHC(
+		    theta = pi_e.parameters,
+		    sigma = 1, 
+		    evaluationFunction = eval_fn
+		)
+		train_iters = 20
+		# train_evals, val_evals = [0] * train_iters, [0] * train_iters
+		k = 5
+		for i in range(train_iters):
+			if (i + 1 ) % k == 0:
+				bsz *= 2
+				# k -= 1
+				bbo.evaluationFunction = hcpe(D_c, D_s, pi_b, c, theta_to_pi, delta, batch_size=bsz)
+			bbo.train()
+			pi_e.parameters = bbo.parameters
+			# train_evals[i] = bbo.eval
+			# train_evals[i] = sum(bbo._evals) / populationSize
+			# train_evals[i], _ = pdis_batch(D_c, pi_e, pi_b, batch_size=1024)
+			# val_evals[i], _ = pdis_batch(D_s_nf, pi_e, pi_b)
+			# print(train_evals[i], val_evals[i])
+
+		print(pi_e.parameters)
+		print('D', pdis_batch(D, pi_e, pi_b)[0])
+		print('D_c', pdis_batch(D_c, pi_e, pi_b)[0])
+		print('D_s', pdis_batch(D_s, pi_e, pi_b)[0])
+		# print('D_nf', pdis_batch(D_nf, pi_e, pi_b)[0])
+		# print('D_c_nf', pdis_batch(D_c_nf, pi_e, pi_b)[0])
+		# print('D_s_nf', pdis_batch(D_s_nf, pi_e, pi_b)[0])
+		print()
+		return pdis_batch(D_s, pi_e, pi_b)[0] > 10
+
+
+	delta = 0.0001
+	c = D_s[2].sum(axis=-1).mean()
+
+	for p in range(1, 30):
+		np.random.seed(p)
+		print(f'policy {p}')
+		pi_e = PolicyLinear(2, FirstOrderFourierBasisFor1dState(), 2)
+		# pi_e.parameters = pi_b.parameters
+
+		def theta_to_pi(theta):
+			pi_e.parameters = theta
+			return pi_e
+
+		for _ in range(10):
+			pi_e.reset()
+			if train(): 
+				break
+
+		# plt.plot(np.arange(len(train_evals)), train_evals)
+		# plt.plot(np.arange(len(val_evals)), val_evals)
+		# plt.show()
+
+		with open(f'out/{p}.csv', 'w') as file:
+			file.writelines([','.join('%.10f' % (x) for x in pi_e._theta.T.flatten()) + '\n'])
+
+run()
